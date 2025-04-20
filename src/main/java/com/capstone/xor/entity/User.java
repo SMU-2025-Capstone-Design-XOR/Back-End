@@ -1,28 +1,37 @@
-package com.capstone.xor.domain;
+package com.capstone.xor.entity;
 
-import jakarta.persistence.Entity;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+import java.util.List;
 
 @Entity
 @Table(name = "users")
 @Getter
+@Setter
 @NoArgsConstructor
 public class User {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id; // 회원 고유 id
-
-    @Column(nullable = false,unique = true)
-    private String username; // 회원 닉네임
-
-    @Column(nullable = false)
-    private String password; // 비밀번호
+    private Long id;
 
     @Column(nullable = false, unique = true)
-    private String email; // 이메일
+    private String username;
+
+    @Column(nullable = false)
+    private String password;
+
+    @Column(nullable = false, unique = true)
+    private String email;
+
+    @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<SyncFolder> syncFolders;
+
+    @Temporal(TemporalType.TIMESTAMP)
+    private java.util.Date createdAt = new java.util.Date();
 
     public User(String username, String password, String email) {
         this.username = username;
