@@ -6,11 +6,8 @@ import com.capstone.xor.entity.User;
 import com.capstone.xor.repository.SyncFolderRepository;
 import com.capstone.xor.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
-import java.nio.file.AccessDeniedException;
-import java.util.Date;
 import java.util.List;
 
 @Service
