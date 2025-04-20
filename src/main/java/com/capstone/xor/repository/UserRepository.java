@@ -1,6 +1,6 @@
 package com.capstone.xor.repository;
 
-import com.capstone.xor.domain.User;
+import com.capstone.xor.entity.User;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.Optional;

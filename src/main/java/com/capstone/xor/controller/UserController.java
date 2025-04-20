@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -28,11 +29,15 @@ public class UserController {
     public ResponseEntity<?> login(@RequestBody LoginRequest request) {
         boolean success = userService.login(request);
         if (success){ // 로그인 성공 시 토큰 생성
-            String token = jwtUtil.generateToken(request.getUsername());
-            return ResponseEntity.ok(Map.of("token", token)); // jwt 토큰 json 형식으로 반환
-        }
-        else{ // 로그인 실패시 에러 메시지 반환
-            return ResponseEntity.badRequest().body(Map.of("error","비밀번호가 일치하지 않습니다."));
+            // 로그인 한 사용자 정보 가져오기
+            Long userId = userService.getUserIdByUsername(request.getUsername());
+            List<String> roles = userService.getRolesByUsername(request.getUsername());
+
+            // jwt 토큰 생성
+            String token = jwtUtil.generateToken(userId, request.getUsername(), roles);
+            return ResponseEntity.ok(Map.of("token", token)); //jwt 토큰을 json 형식으로 반환
+        } else { // 로그인 실패 시 에러 메시지 반환
+            return ResponseEntity.badRequest().body(Map.of("error", "비밀번호가 일치하지 않습니다."));
         }
     }
 

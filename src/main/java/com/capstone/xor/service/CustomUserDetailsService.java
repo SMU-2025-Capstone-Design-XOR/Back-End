@@ -1,6 +1,6 @@
 package com.capstone.xor.service;
 
-import com.capstone.xor.domain.User;
+import com.capstone.xor.entity.User;
 import com.capstone.xor.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.userdetails.UserDetails;
