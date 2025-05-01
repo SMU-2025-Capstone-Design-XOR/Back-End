@@ -1,6 +1,6 @@
 package com.capstone.xor.controller;
 
-import com.capstone.xor.dto.SyncFolderDTO;
+import com.capstone.xor.dto.SyncFolderResponse;
 import com.capstone.xor.entity.SyncFolder;
 import com.capstone.xor.entity.User;
 import com.capstone.xor.security.JwtUtil;
@@ -66,7 +66,7 @@ public class SyncFolderControllerTest {
         mockSyncFolder.setCreatedAt(new Date());
         mockSyncFolder.setUser(mockUser);
 
-        SyncFolderDTO mockSyncFolderDTO = new SyncFolderDTO(mockSyncFolder);
+        SyncFolderResponse mockSyncFolderDTO = new SyncFolderResponse(mockSyncFolder);
 
         Mockito.when(syncFolderService.saveSyncFolder(eq(1L), any(String.class)))
                 .thenReturn(mockSyncFolderDTO);
@@ -106,10 +106,10 @@ public class SyncFolderControllerTest {
         folderEntity2.setUser(user);
 
         // 엔티티 -> DTO 변환
-        SyncFolderDTO folder1 = new SyncFolderDTO(folderEntity1);
-        SyncFolderDTO folder2 = new SyncFolderDTO(folderEntity2);
+        SyncFolderResponse folder1 = new SyncFolderResponse(folderEntity1);
+        SyncFolderResponse folder2 = new SyncFolderResponse(folderEntity2);
 
-        List<SyncFolderDTO> mockFolderDTOs = Arrays.asList(folder1, folder2);
+        List<SyncFolderResponse> mockFolderDTOs = Arrays.asList(folder1, folder2);
 
         Mockito.when(syncFolderService.getFoldersByUser(1L)).thenReturn(mockFolderDTOs);
 
