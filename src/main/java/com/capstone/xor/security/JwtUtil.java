@@ -14,7 +14,6 @@ import org.springframework.stereotype.Component;
 import java.security.Key;
 import java.util.Date;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 @Component
@@ -52,17 +51,18 @@ public class JwtUtil {
                 .build()
                 .parseClaimsJws(token)
                 .getBody()
-                .getSubject();
+                .get("username", String.class); // username필드에서 추출
     }
 
     // jwt에서 사용자 Id 추출
     public Long getUserIdFromToken(String token) {
-        return Jwts.parserBuilder()
+        String userIdStr = Jwts.parserBuilder()
                 .setSigningKey(getSigningKey())
                 .build()
                 .parseClaimsJws(token)
                 .getBody()
-                .get("userId", Long.class);
+                .getSubject(); // sub 필드에서 id 읽음
+        return Long.valueOf(userIdStr); // 문자열을 long으로 변환
     }
 
     // jwt에서 권한 정보 추출
