@@ -7,14 +7,14 @@ import java.util.Date;
 
 
 @Getter
-public class SyncFolderDTO {
+public class SyncFolderResponse {
 
     private final Long id;
     private final String folderPath;
     private final Date createdAt;
     private final Long userId;
 
-    public SyncFolderDTO(SyncFolder syncFolder) {
+    public SyncFolderResponse(SyncFolder syncFolder) {
         this.id = syncFolder.getId();
         this.folderPath = syncFolder.getFolderPath();
         this.createdAt = syncFolder.getCreatedAt();
