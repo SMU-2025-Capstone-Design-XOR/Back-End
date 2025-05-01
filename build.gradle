@@ -43,6 +43,8 @@ dependencies {
 	testImplementation 'org.springframework.security:spring-security-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 	testImplementation 'org.mockito:mockito-core'
+
+	implementation 'com.amazonaws:aws-java-sdk-s3:1.12.524'
 }
 
 tasks.named('test') {
