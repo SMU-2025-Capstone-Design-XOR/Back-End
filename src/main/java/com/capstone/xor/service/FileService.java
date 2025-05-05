@@ -68,7 +68,7 @@ public class FileService {
 
     // 파일 업로드 메서드
     @Transactional
-    public String uploadFile(Long userId, Long syncFolderId, MultipartFile file) {
+    public String uploadFile(Long userId, Long syncFolderId, MultipartFile file, String relativePath) {
 
         // 폴더 접근 권한 검증
         validateFolderAccess(userId, syncFolderId);
@@ -76,7 +76,7 @@ public class FileService {
         try {
             // 파일 경로 생성: users/{userId}/{s3FolderId}/{fileName}
             String fileName = file.getOriginalFilename();
-            String filePath = String.format("users/%d/sync-folders/%d/%s", userId, syncFolderId, fileName);
+            String filePath = String.format("users/%d/sync-folders/%d/%s", userId, syncFolderId, relativePath);
 
             System.out.println("[디버그] 사용중인 S3 버킷 이름: [" + bucketName + "]");
 
@@ -154,12 +154,12 @@ public class FileService {
     }
 
     @Transactional(readOnly = true)
-    public Resource downloadFileWithValidation(Long userId, Long syncFolderId, String fileName) {
+    public Resource downloadFileWithValidation(Long userId, Long syncFolderId, String relativePath) {
         // 폴더 접근 권한 검증
         validateFolderAccess(userId, syncFolderId);
 
         // S3 키 생성(디코딩 된 파일명 사용)
-        String s3Key = String.format("users/%d/sync-folders/%d/%s", userId, syncFolderId, fileName);
+        String s3Key = String.format("users/%d/sync-folders/%d/%s", userId, syncFolderId, relativePath);
 
         // 내부용 다운로드 메서드 호출
         return downloadFile(s3Key);
@@ -200,11 +200,11 @@ public class FileService {
 
         // 클라이언트 파일 이름 -> 메타데이터 맵 생성
         Map<String, FileMetaDTO> clientFileMap = request.getClientFiles().stream()
-                .collect(Collectors.toMap(FileMetaDTO::getOriginalName, file -> file));
+                .collect(Collectors.toMap(FileMetaDTO::getRelativePath, file -> file));
 
         // 서버 파일 이름 -> 메타데이터 맵 생성
         Map<String, FileMeta> serverFileMap = serverFiles.stream()
-                .collect(Collectors.toMap(FileMeta::getOriginalName, file -> file));
+                .collect(Collectors.toMap(this::extractRelativePath, file -> file));
 
         // 삭제 요청 처리
         if (request.getDeletedFileIds() != null && !request.getDeletedFileIds().isEmpty()) {
@@ -214,10 +214,10 @@ public class FileService {
         // 업로드 대상 파일 식별 ( 클라이언트에는 있지만 서버에 없거나, 해시가 다른 파일)
         List<String> filesToUpload = new ArrayList<>();
         for (FileMetaDTO clientFile : request.getClientFiles()) {
-            FileMeta serverFile = serverFileMap.get(clientFile.getOriginalName());
+            FileMeta serverFile = serverFileMap.get(clientFile.getRelativePath());
             if (serverFile == null) {
                 // 서버에 없는 새 파일은 업로드 대상
-                filesToUpload.add(clientFile.getOriginalName());
+                filesToUpload.add(clientFile.getRelativePath());
             } else if (!Objects.equals(clientFile.getHash(), serverFile.getHash())) {
                 // 해시가 다른 파일(내용이 변경됨)은 업로드 대상
 
@@ -228,11 +228,13 @@ public class FileService {
 
                 // 클라이언트의 lastModified가 서버보다 최신이면 업로드 대상에 추가
                 if (clientLastModified.isAfter(serverFile.getLastModified())) {
-                    filesToUpload.add(clientFile.getOriginalName());
 
-                    // 동기화 시간 업데이트
-                    serverFile.setLastSyncTime(LocalDateTime.now());
-                    fileMetaRepository.save(serverFile);
+                    serverFile.setHash(clientFile.getHash()); // hash 갱신
+                    serverFile.setSize(clientFile.getSize()); // file size 갱신
+                    serverFile.setLastModified(clientLastModified); // lastModified 갱신
+                    serverFile.setLastSyncTime(LocalDateTime.now()); // 동기화 시간 갱신
+                    fileMetaRepository.save(serverFile); // DB에 반영(자동으로 해주지만 명확성을 위해 작성)
+                    filesToUpload.add(clientFile.getRelativePath());
                 }
             }
         }
@@ -240,8 +242,9 @@ public class FileService {
         // 다운로드 대상 파일 식별(서버에는 있지만 클라이언트에 없는 파일)
         List<String> filesToDownload = new ArrayList<>();
         for (FileMeta serverFile : serverFiles) {
-            if (!clientFileMap.containsKey(serverFile.getOriginalName()) && (request.getDeletedFileIds() == null || !request.getDeletedFileIds().contains(serverFile.getId()))) {
-                filesToDownload.add(serverFile.getOriginalName());
+            String serverRelativePath = extractRelativePath(serverFile);
+            if (!clientFileMap.containsKey(serverRelativePath) && (request.getDeletedFileIds() == null || !request.getDeletedFileIds().contains(serverFile.getId()))) {
+                filesToDownload.add(serverRelativePath);
             }
         }
 
@@ -253,7 +256,7 @@ public class FileService {
 
         // 서버 파일 메타데이터 토큰 DTO로 변환
         List<FileMetaDTO> serverFilesDTOs = serverFiles.stream()
-                .map(file -> convertToDTO(file, userId, file.getSyncFolder().getId()))
+                .map(this::convertToDTO)
                 .collect(Collectors.toList());
 
         // 결과 반환
@@ -264,6 +267,16 @@ public class FileService {
         result.setConflictFiles(conflictFiles);
 
         return result;
+    }
+
+    // 상대 경로 추출 메서드
+    public String extractRelativePath(FileMeta file){
+        String s3Key = file.getS3Key();
+        String prefix = String.format("users/%d/sync-folders/%d/",file.getUser().getId(), file.getSyncFolder().getId());
+
+        return s3Key.startsWith(prefix)
+                ? s3Key.substring(prefix.length())
+                : "";
     }
 
     /**
@@ -344,20 +357,23 @@ public class FileService {
      *
      * @param userId   사용자 ID
      * @param folderId 폴더 ID
-     * @param fileName 파일 이름
+     * @param relativePath 파일의 상대경로
      * @return 파일 메타데이터
      */
     @Transactional(readOnly = true)
-    public FileMetaDTO getFileMetadata(Long userId, Long folderId, String fileName) {
+    public FileMetaDTO getFileMetadata(Long userId, Long folderId, String relativePath) {
         // 폴더 접근 권한 검증
         validateFolderAccess(userId, folderId);
 
-        // 파일 메타 데이터 조회
-        FileMeta fileMeta = fileMetaRepository.findByUserIdAndSyncFolderIdAndOriginalName(userId, folderId, fileName)
-                .orElseThrow(() -> new ResourceNotFoundException("파일을 찾을 수 없습니다: " + fileName));
+        // s3 키 생성
+        String s3Key = String.format("users/%d/sync-folders/%d/%s", userId, folderId, relativePath);
+
+        // s3키로 파일 메타 데이터 조회
+        FileMeta fileMeta = fileMetaRepository.findByUserIdAndSyncFolderIdAndS3Key(userId, folderId, s3Key)
+                .orElseThrow(() -> new ResourceNotFoundException("파일을 찾을 수 없습니다: " + relativePath));
 
         // 엔티티를 dto로 변환하여 반환
-        return convertToDTO(fileMeta, userId, folderId);
+        return convertToDTO(fileMeta);
     }
 
     /**
@@ -365,7 +381,7 @@ public class FileService {
      * @param fileMeta 파일 메타데이터 엔티티
      * @return 파일 메타데이터 DTO
      */
-    private FileMetaDTO convertToDTO(FileMeta fileMeta, Long userId, Long syncFolderId) {
+    private FileMetaDTO convertToDTO(FileMeta fileMeta) {
         FileMetaDTO dto = new FileMetaDTO();
         dto.setOriginalName(fileMeta.getOriginalName());
         dto.setSize(fileMeta.getSize());
@@ -375,14 +391,7 @@ public class FileService {
         dto.setHash(fileMeta.getHash());
 
         // 상대 경로 설정(s3키에서 추출 또는 별도의 필드 "" 사용)
-        String s3Key = fileMeta.getS3Key();
-        String prefix = String.format("users/%d/sync-folders/%d/", userId, syncFolderId);
-        if (s3Key.startsWith(prefix)) {
-            // 접두사 이후의 모든 경로를 상대경로로 사용
-            dto.setRelativePath(s3Key.substring(prefix.length()));
-        } else {
-            dto.setRelativePath("");
-        }
+        dto.setRelativePath(extractRelativePath(fileMeta));
 
         // 파일 id 설정
         if (fileMeta.getId() != null) {
@@ -424,7 +433,7 @@ public class FileService {
 
         // 엔티티를 dto로 변환하여 반환
         return files.stream()
-                .map(file -> convertToDTO(file, userId, syncFolderId))
+                .map(this::convertToDTO)
                 .collect(Collectors.toList());
     }
 
@@ -440,17 +449,12 @@ public class FileService {
         // 사용자 존재 여부 확인
         userRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException("사용자를 찾을 수 없습니다: " + userId));
-        // 파일명으로 검색
-        List<FileMeta> files = fileMetaRepository.findByOriginalNameContaining(keyword);
+        // S3 키로 검색
+        List<FileMeta> files = fileMetaRepository.findByUserIdAndS3KeyContaining(userId, keyword);
 
-        // 사용자가 접근 가능한 파일만 필터링 (사용자의 파일만 반환)
-        List<FileMeta> accessibleFiles = files.stream()
-                .filter(file -> file.getUser().getId().equals(userId))
-                .collect(Collectors.toList());
-
-        // 엔티티를 dto로 변환하여 반환
-        return accessibleFiles.stream()
-                .map(file -> convertToDTO(file, file.getUser().getId(), file.getSyncFolder().getId()))
+        // dto로 변환하여 반환
+        return files.stream()
+                .map(this::convertToDTO)
                 .collect(Collectors.toList());
     }
 

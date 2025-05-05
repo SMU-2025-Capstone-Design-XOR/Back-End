@@ -1,19 +1,16 @@
 package com.capstone.xor.controller;
 
-import com.amazonaws.services.s3.model.AmazonS3Exception;
 import com.capstone.xor.dto.FileMetaDTO;
 import com.capstone.xor.service.FileService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URLDecoder;
 import java.net.URLEncoder;
@@ -33,16 +30,22 @@ public class FileController {
             @PathVariable Long userId,
             @PathVariable Long folderId,
             @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "relativePath", required = false, defaultValue = "") String relativePath,
             Authentication authentication) {
 
-        // jwt에서 추출한 userid와 url의 userid비교
+        // 유효한 경로인지 검증
+        if (relativePath.contains("..") || relativePath.contains("//") || relativePath.startsWith("/") || relativePath.startsWith("\\")) {
+            throw new IllegalArgumentException("잘못된 경로 형식입니다.");
+        }
+
+        // jwt에서 추출한 userid와 url의 userid비교로 접근 권한 검증
         Long authenticatedUserId = (Long)authentication.getDetails();
         if (!userId.equals(authenticatedUserId)) {
             throw new AccessDeniedException("접근 권한이 없습니다.");
         }
 
         // 파일 업로드 처리
-        String filePath = fileService.uploadFile(userId, folderId, file);
+        String filePath = fileService.uploadFile(userId, folderId, file, relativePath);
 
         // 성공 응답 반환
         Map<String, String> response = new HashMap<>();
@@ -53,11 +56,11 @@ public class FileController {
     }
 
     // 파일 다운로드 엔드포인트
-    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/{fileName}")
+    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/{relativePath}")
     public ResponseEntity<Resource> downloadFile(
             @PathVariable Long userId,
             @PathVariable Long folderId,
-            @PathVariable String fileName,
+            @PathVariable String relativePath,
             Authentication authentication) {
 
         // jwt에서 추출한 userid와 url의 userid를 비교
@@ -67,13 +70,13 @@ public class FileController {
         }
 
         // url 디코딩
-        String decodedFileName = URLDecoder.decode(fileName, StandardCharsets.UTF_8);
+        String decodedRelativePath = URLDecoder.decode(relativePath, StandardCharsets.UTF_8);
 
         // 경로 생성과 검증을 함께 처리하는 메서드 호출
-        Resource resource = fileService.downloadFileWithValidation(userId, folderId, decodedFileName);
+        Resource resource = fileService.downloadFileWithValidation(userId, folderId, decodedRelativePath);
 
         // RFC 5987 규약에 따른 한글 파일명 인코딩 처리
-        String encodedFilename = encodeFilename(decodedFileName);
+        String encodedFilename = encodeFilename(decodedRelativePath);
 
         // Content-Disposition 헤더 설정
         return ResponseEntity.ok()
@@ -120,19 +123,19 @@ public class FileController {
      * 특정 파일의 메타데이터 조회
      * @param userId 사용자 ID
      * @param folderId 폴더 ID
-     * @param fileName 파일 이름
+     * @param relativePath 파일 이름
      * @param authentication 인증 정보
      * @return 파일 메타데이터
      */
-    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/{fileName}/meta")
+    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/{relativePath}/meta")
     public ResponseEntity<FileMetaDTO> getFileMeta(
             @PathVariable Long userId,
             @PathVariable Long folderId,
-            @PathVariable String fileName,
+            @PathVariable String relativePath,
             Authentication authentication) {
 
         // URL 디코딩
-        fileName = URLDecoder.decode(fileName, StandardCharsets.UTF_8);
+        relativePath = URLDecoder.decode(relativePath, StandardCharsets.UTF_8);
 
         // jwt 인증 검증
         Long authenticatedUserId = (Long) authentication.getDetails();
@@ -141,7 +144,7 @@ public class FileController {
         }
 
         // 파일 메타 데이터 조회
-        FileMetaDTO fileMetaDTO = fileService.getFileMetadata(userId, folderId, fileName);
+        FileMetaDTO fileMetaDTO = fileService.getFileMetadata(userId, folderId, relativePath);
         return ResponseEntity.ok(fileMetaDTO);
     }
 
