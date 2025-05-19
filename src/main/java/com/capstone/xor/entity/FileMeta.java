@@ -36,6 +36,10 @@ public class FileMeta {
     @Column(length = 64) // SHA-256 해시는 64자
     private String hash;
 
+    // 현재 파일의 버전 (최초 1로 시작)
+    @Column(nullable = false)
+    private int currentVersion = 1;
+
     // 업로드한 사용자
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id", nullable = false)
@@ -55,4 +59,8 @@ public class FileMeta {
     // 마지막 동기화 시간
     private LocalDateTime lastSyncTime = LocalDateTime.now();
 
+    // 버전 증가 메서드
+    public void incrementVersion() {
+        this.currentVersion += 1;
+    }
 }

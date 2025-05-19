@@ -39,7 +39,7 @@ public class FileController {
         }
 
         // jwt에서 추출한 userid와 url의 userid비교로 접근 권한 검증
-        Long authenticatedUserId = (Long)authentication.getDetails();
+        Long authenticatedUserId = (Long) authentication.getDetails();
         if (!userId.equals(authenticatedUserId)) {
             throw new AccessDeniedException("접근 권한이 없습니다.");
         }
@@ -56,12 +56,15 @@ public class FileController {
     }
 
     // 파일 다운로드 엔드포인트
-    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/{relativePath}")
+    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/{relativePath:.+}")
     public ResponseEntity<Resource> downloadFile(
-            @PathVariable Long userId,
-            @PathVariable Long folderId,
-            @PathVariable String relativePath,
+            @PathVariable("userId") Long userId,
+            @PathVariable("folderId") Long folderId,
+            @PathVariable("relativePath") String relativePath,
             Authentication authentication) {
+
+        System.out.println("Raw relativePath: " + relativePath);
+        System.out.println("downloadFile called: " + relativePath);
 
         // jwt에서 추출한 userid와 url의 userid를 비교
         Long authenticatedUserId = (Long) authentication.getDetails();
@@ -72,12 +75,14 @@ public class FileController {
         // url 디코딩
         String decodedRelativePath = URLDecoder.decode(relativePath, StandardCharsets.UTF_8);
 
+        System.out.println("Decoded relativePath: " + decodedRelativePath);
         // 경로 생성과 검증을 함께 처리하는 메서드 호출
         Resource resource = fileService.downloadFileWithValidation(userId, folderId, decodedRelativePath);
 
         // RFC 5987 규약에 따른 한글 파일명 인코딩 처리
         String encodedFilename = encodeFilename(decodedRelativePath);
 
+        System.out.println("encodedFilename(한글 파일명 인코딩 처리): " + encodedFilename);
         // Content-Disposition 헤더 설정
         return ResponseEntity.ok()
                 .contentType(MediaType.APPLICATION_OCTET_STREAM)
@@ -121,9 +126,10 @@ public class FileController {
 
     /**
      * 특정 파일의 메타데이터 조회
-     * @param userId 사용자 ID
-     * @param folderId 폴더 ID
-     * @param relativePath 파일 이름
+     *
+     * @param userId         사용자 ID
+     * @param folderId       폴더 ID
+     * @param relativePath   파일 이름
      * @param authentication 인증 정보
      * @return 파일 메타데이터
      */

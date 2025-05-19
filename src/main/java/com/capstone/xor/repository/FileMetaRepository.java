@@ -28,4 +28,6 @@ public interface FileMetaRepository extends JpaRepository<FileMeta, Long> {
 
     // 폴더 아이디로 그 폴더의 모든 파일 삭제
     void deleteAllBySyncFolderId(Long syncFolderId);
+
+    Optional<FileMeta> findByUserIdAndSyncFolderIdAndOriginalName(Long userId, Long syncFolderId, String originalName);
 }
