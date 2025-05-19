@@ -5,16 +5,17 @@ import com.amazonaws.services.s3.model.AmazonS3Exception;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.model.S3ObjectInputStream;
+import com.capstone.xor.dto.DiffResult;
 import com.capstone.xor.dto.FileMetaDTO;
 import com.capstone.xor.dto.SyncRequest;
 import com.capstone.xor.dto.SyncResult;
-import com.capstone.xor.entity.FileMeta;
-import com.capstone.xor.entity.SyncFolder;
-import com.capstone.xor.entity.User;
+import com.capstone.xor.entity.*;
 import com.capstone.xor.exception.ResourceNotFoundException;
 import com.capstone.xor.repository.FileMetaRepository;
 import com.capstone.xor.repository.SyncFolderRepository;
 import com.capstone.xor.repository.UserRepository;
+import com.capstone.xor.repository.VersionMetadataRepository;
+import com.capstone.xor.util.FileUtil;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.InputStreamResource;
@@ -26,16 +27,12 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -45,6 +42,9 @@ public class FileService {
     private final SyncFolderRepository syncFolderRepository;
     private final FileMetaRepository fileMetaRepository;
     private final UserRepository userRepository;
+    private final VersionMetadataRepository versionMetadataRepository;
+    private final FileUtil fileUtil;
+    private DiffService diffService;
 
     @Value("${cloud.aws.s3.bucket}")
     private String bucketName;
@@ -73,44 +73,98 @@ public class FileService {
         // 폴더 접근 권한 검증
         validateFolderAccess(userId, syncFolderId);
 
-        try {
-            // 파일 경로 생성: users/{userId}/{s3FolderId}/{fileName}
-            String fileName = file.getOriginalFilename();
-            String filePath = String.format("users/%d/sync-folders/%d/%s", userId, syncFolderId, relativePath);
+        String fileName = file.getOriginalFilename();
+        String s3RootKey = String.format("users/%d/sync-folders/%d/%s", userId, syncFolderId, relativePath);
+        System.out.println("[디버그] 사용중인 S3 버킷 이름: [" + bucketName + "]");
 
-            System.out.println("[디버그] 사용중인 S3 버킷 이름: [" + bucketName + "]");
+        // filemeta 조회
+        Optional<FileMeta> fileMetaOpt = fileMetaRepository.findByUserIdAndSyncFolderIdAndOriginalName(userId, syncFolderId, fileName);
 
-            // 파일 해시값 계산 (SHA-256)
-            String hash = calculateFileHash(file.getInputStream());
+        if (fileMetaOpt.isEmpty()) {
+            try {
 
-            // S3에 파일 업로드
-            ObjectMetadata metadata = new ObjectMetadata();
-            metadata.setContentType(file.getContentType());
-            metadata.setContentLength(file.getSize());
+                // 최초 업로드
+                fileUtil.uploadToS3(s3RootKey, file);
+                String snapshotKey = String.format("users/%s/sync-folders/%d/.snapshot/%s", userId, syncFolderId, fileName);
+                fileUtil.uploadToS3(snapshotKey, file);
 
-            amazonS3.putObject(bucketName, filePath, file.getInputStream(), metadata);
+                FileMeta fileMeta = new FileMeta();
+                fileMeta.setOriginalName(fileName);
+                fileMeta.setS3Key(s3RootKey);
+                fileMeta.setSize(file.getSize());
+                fileMeta.setMimeType(file.getContentType());
+                fileMeta.setHash(calculateFileHash(file.getInputStream()));
+                fileMeta.setUser(userRepository.getReferenceById(userId));
 
-            // DB에 파일 메타데이터 저장
-            // 연관 엔티티 조회(JPA getReferenceById 사용 시 실제 Select 쿼리는 필요 시점에만 나감)
-            User user = userRepository.getReferenceById(userId);
-            SyncFolder syncFolder = syncFolderRepository.getReferenceById(syncFolderId);
+                fileMeta.setSyncFolder(syncFolderRepository.getReferenceById(syncFolderId));
+                fileMeta.setCurrentVersion(1);
+                fileMeta.setLastModified(LocalDateTime.now());
+                fileMeta.setLastSyncTime(LocalDateTime.now());
+                fileMetaRepository.save(fileMeta);
 
-            FileMeta fileMeta = new FileMeta();
-            fileMeta.setOriginalName(fileName);
-            fileMeta.setS3Key(filePath);
-            fileMeta.setSize(file.getSize());
-            fileMeta.setMimeType(file.getContentType());
-            fileMeta.setHash(hash);
-            fileMeta.setUser(user);
-            fileMeta.setSyncFolder(syncFolder);
-            fileMeta.setLastModified(LocalDateTime.now());
-            fileMeta.setLastSyncTime(LocalDateTime.now());
+                VersionMetadata versionMeta = VersionMetadata.builder()
+                        .fileMeta(fileMeta)
+                        .versionNumber(1)
+                        .versionType(VersionType.SNAPSHOT)
+                        .s3Key(snapshotKey)
+                        .createdDate(LocalDateTime.now())
+                        .build();
+                versionMetadataRepository.save(versionMeta);
 
-            fileMetaRepository.save(fileMeta);
+                return s3RootKey;
+            } catch (IOException e) {
+                throw new RuntimeException("S3 업로드 중 오류 발생", e);
+            }
+        } else {
+            // 업데이트
+            FileMeta fileMeta = fileMetaOpt.get();
+            int newVersion = fileMeta.getCurrentVersion() + 1;
+            String tmpKey = s3RootKey + ".tmp";
+            try {
 
-            return filePath;
-        } catch (IOException e) {
-            throw new RuntimeException("파일 업로드 실패", e);
+                fileUtil.uploadToS3(tmpKey, file);
+
+                // s3에서 최신본, 새 파일 다운로드
+                File prevFile = fileUtil.downloadFromS3(fileMeta.getS3Key());
+                File newFile = fileUtil.downloadFromS3(tmpKey);
+
+                // 압축 해제 및 diff 계산
+                File prevUnzipDir = fileUtil.unzipToTempDir(prevFile);
+                File newUnzipDir = fileUtil.unzipToTempDir(newFile);
+                List<DiffResult> diffs = diffService.diffAllFiles(prevUnzipDir, newUnzipDir);
+
+                // diff 파일 s3저장, versionmetadata(diff)생성
+                for (DiffResult diff : diffs) {
+                    String diffKey = String.format("users/%d/sync-folders/%d/.diffs/v%d/%s.diff", userId, syncFolderId, newVersion, diff.getRelativePath());
+                    fileUtil.uploadToS3(diffKey, diff.toInputStream(), diff.getSize(), diff.getMimeType());
+
+                    VersionMetadata versionMeta = VersionMetadata.builder()
+                            .fileMeta(fileMeta)
+                            .versionNumber(newVersion)
+                            .versionType(VersionType.DIFF)
+                            .s3Key(diffKey)
+                            .createdDate(LocalDateTime.now())
+                            .build();
+                    versionMetadataRepository.save(versionMeta);
+                }
+                // 루트파일 s3 교체
+                amazonS3.copyObject(bucketName, tmpKey, bucketName, s3RootKey);
+                amazonS3.deleteObject(bucketName, tmpKey);
+
+                fileMeta.setCurrentVersion(newVersion);
+                fileMeta.setS3Key(s3RootKey);
+                fileMeta.setSize(file.getSize());
+                fileMeta.setMimeType(file.getContentType());
+                fileMeta.setHash(calculateFileHash(file.getInputStream()));
+                fileMeta.setLastModified(LocalDateTime.now());
+                fileMeta.setLastSyncTime(LocalDateTime.now());
+                fileMetaRepository.save(fileMeta);
+
+                return s3RootKey;
+            } catch (IOException e) {
+                try { amazonS3.deleteObject(bucketName, tmpKey); } catch (Exception ignore) {}
+                throw new RuntimeException("S3 업로드/처리 중 오류 발생", e);
+            }
         }
     }
 
@@ -157,9 +211,15 @@ public class FileService {
     public Resource downloadFileWithValidation(Long userId, Long syncFolderId, String relativePath) {
         // 폴더 접근 권한 검증
         validateFolderAccess(userId, syncFolderId);
+        // 타임스탬프 포맷 지정
+        String now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"));
+        // relativePath 값 로그로 출력
+        System.out.println("[" + now + "] downloadFileWithValidation - relativePath: " + relativePath);
 
         // S3 키 생성(디코딩 된 파일명 사용)
         String s3Key = String.format("users/%d/sync-folders/%d/%s", userId, syncFolderId, relativePath);
+
+        System.out.println("[" + now + "] downloadFileWithValidation - s3Key: " + s3Key);
 
         // 내부용 다운로드 메서드 호출
         return downloadFile(s3Key);
