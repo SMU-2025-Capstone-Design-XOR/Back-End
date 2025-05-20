@@ -26,7 +26,7 @@ import java.util.zip.ZipOutputStream;
 @RequiredArgsConstructor
 public class DiffService {
 
-    private VersionMetadataRepository versionMetadataRepository;
+    private final VersionMetadataRepository versionMetadataRepository;
     private final FileUtil fileUtil;
 
     @Value("${cloud.aws.s3.bucket}")
