@@ -68,37 +68,62 @@ public class FileService {
     // 파일 업로드 메서드
     @Transactional
     public String uploadFile(Long userId, Long syncFolderId, MultipartFile file, String relativePath) {
-
-        // 폴더 접근 권한 검증
+        // 1. 폴더 접근 권한 검증
         validateFolderAccess(userId, syncFolderId);
 
         String fileName = file.getOriginalFilename();
-        String s3RootKey = String.format("users/%d/sync-folders/%d/%s", userId, syncFolderId, relativePath);
-        System.out.println("[디버그] 사용중인 S3 버킷 이름: [" + bucketName + "]");
+        String extension = getExtension(fileName);
+        System.out.println("[업로드] 파일명: " + fileName + ", 확장자: " + extension);
 
-        // filemeta 조회
+        // 2. filemeta 조회
         Optional<FileMeta> fileMetaOpt = fileMetaRepository.findByUserIdAndSyncFolderIdAndOriginalName(userId, syncFolderId, fileName);
+
+        FileMeta fileMeta;
+        Long fileId;
+        if (fileMetaOpt.isEmpty()) {
+            // 신규 파일 등록
+            fileMeta = new FileMeta();
+            fileMeta.setOriginalName(fileName);
+            fileMeta.setUser(userRepository.getReferenceById(userId));
+            fileMeta.setSyncFolder(syncFolderRepository.getReferenceById(syncFolderId));
+            fileMeta.setCurrentVersion(1);
+            fileMeta.setLastModified(LocalDateTime.now());
+            fileMeta.setLastSyncTime(LocalDateTime.now());
+            fileMeta.setSize(file.getSize());
+            fileMeta.setMimeType(file.getContentType());
+            try {
+                fileMeta.setHash(calculateFileHash(file.getInputStream()));
+            } catch (IOException e) {
+                throw new RuntimeException("파일 해시 계산 중 오류", e);
+            }
+            fileMetaRepository.save(fileMeta);
+            fileId = fileMeta.getId();
+            System.out.println("[업로드] 신규 FileMeta 생성, fileId: " + fileId);
+        } else {
+            fileMeta = fileMetaOpt.get();
+            fileId = fileMeta.getId();
+            System.out.println("[업로드] 기존 FileMeta 조회, fileId: " + fileId + ", currentVersion: " + fileMeta.getCurrentVersion());
+        }
+
+        // 3. 파일별 S3 baseKey
+        String baseKey = String.format("users/%d/sync-folders/%d/files/%d", userId, syncFolderId, fileId);
+        System.out.println("[업로드] S3 baseKey: " + baseKey);
 
         if (fileMetaOpt.isEmpty()) {
             try {
-
                 // 최초 업로드
-                fileUtil.uploadToS3(s3RootKey, file);
-                String snapshotKey = String.format("users/%s/sync-folders/%d/.snapshot/%s", userId, syncFolderId, fileName);
+                String snapshotKey = baseKey + "/.snapshot/v1." + extension;
+                System.out.println("[업로드] 최초 snapshotKey: " + snapshotKey);
                 fileUtil.uploadToS3(snapshotKey, file);
 
-                FileMeta fileMeta = new FileMeta();
-                fileMeta.setOriginalName(fileName);
-                fileMeta.setS3Key(s3RootKey);
+                fileMeta.setS3Key(snapshotKey);
                 fileMeta.setSize(file.getSize());
                 fileMeta.setMimeType(file.getContentType());
-                fileMeta.setHash(calculateFileHash(file.getInputStream()));
-                fileMeta.setUser(userRepository.getReferenceById(userId));
-
-                fileMeta.setSyncFolder(syncFolderRepository.getReferenceById(syncFolderId));
-                fileMeta.setCurrentVersion(1);
-                fileMeta.setLastModified(LocalDateTime.now());
-                fileMeta.setLastSyncTime(LocalDateTime.now());
+                try {
+                    fileMeta.setHash(calculateFileHash(file.getInputStream()));
+                } catch (IOException e) {
+                    throw new RuntimeException("파일 해시 계산 중 오류", e);
+                }
                 fileMetaRepository.save(fileMeta);
 
                 VersionMetadata versionMeta = VersionMetadata.builder()
@@ -110,62 +135,65 @@ public class FileService {
                         .build();
                 versionMetadataRepository.save(versionMeta);
 
-                return s3RootKey;
+                System.out.println("[업로드] 최초 버전 등록 완료");
+                return snapshotKey;
             } catch (IOException e) {
                 throw new RuntimeException("S3 업로드 중 오류 발생", e);
             }
         } else {
             // 업데이트
-            FileMeta fileMeta = fileMetaOpt.get();
             int newVersion = fileMeta.getCurrentVersion() + 1;
-            String tmpKey = s3RootKey + ".tmp";
+            String tmpKey = baseKey + "/tmp/v" + newVersion + "." + extension;
+            System.out.println("[업데이트] 임시 업로드 tmpKey: " + tmpKey);
             try {
-
                 fileUtil.uploadToS3(tmpKey, file);
 
                 // s3에서 최신본, 새 파일 다운로드
                 File prevFile = fileUtil.downloadFromS3(fileMeta.getS3Key());
                 File newFile = fileUtil.downloadFromS3(tmpKey);
+                System.out.println("[업데이트] prevFile: " + prevFile.getAbsolutePath() + ", newFile: " + newFile.getAbsolutePath());
 
                 boolean isPrevOOXML = fileUtil.isOOXMLFile(prevFile) && fileUtil.isZipFile(prevFile);
                 boolean isNewOOXML  = fileUtil.isOOXMLFile(newFile)  && fileUtil.isZipFile(newFile);
+                System.out.println("[업데이트] isPrevOOXML: " + isPrevOOXML + ", isNewOOXML: " + isNewOOXML);
 
                 File prevUnzipDir;
                 File newUnzipDir;
 
-                // 압축 해제 및 diff 계산
                 if (isPrevOOXML && isNewOOXML) {
-                    // 둘 다 OOXML(압축 해제)
                     prevUnzipDir = fileUtil.unzipToTempDir(prevFile);
                     newUnzipDir  = fileUtil.unzipToTempDir(newFile);
+                    System.out.println("[업데이트] OOXML 압축 해제 완료");
                 } else if (!isPrevOOXML && !isNewOOXML) {
-                    // 둘 다 일반 파일(단일 파일 복사)
                     prevUnzipDir = fileUtil.singleFileToTempDir(prevFile, fileName);
                     newUnzipDir  = fileUtil.singleFileToTempDir(newFile, fileName);
+                    System.out.println("[업데이트] 일반 파일 복사 완료");
                 } else {
-                    // 한쪽만 OOXML인 경우: 비교 불가, 예외 처리
                     try { amazonS3.deleteObject(bucketName, tmpKey); } catch (Exception ignore) {}
+                    System.out.println("[업데이트][에러] 파일 유형이 달라 비교 불가");
                     throw new RuntimeException("이전 버전과 새 버전의 파일 유형이 달라 비교할 수 없습니다.");
                 }
 
                 List<DiffResult> diffs;
                 try {
                     diffs = diffService.diffAllFiles(prevUnzipDir, newUnzipDir);
+                    System.out.println("[업데이트] diff 계산 결과 개수: " + (diffs != null ? diffs.size() : "null"));
                 } catch (Exception e) {
-                    // diff 계산 중 예외 발생 시 tmp 파일 삭제 후 예외 반환
                     try { amazonS3.deleteObject(bucketName, tmpKey); } catch (Exception ignore) {}
+                    System.out.println("[업데이트][에러] diff 계산 중 오류: " + e.getMessage());
                     throw new RuntimeException("diff 계산 중 오류 발생: " + e.getMessage(), e);
                 }
 
                 if (diffs == null || diffs.isEmpty()) {
-                    // diff가 없으면 tmp 파일 삭제 후 예외 반환(기존 파일 유지)
                     try { amazonS3.deleteObject(bucketName, tmpKey); } catch (Exception ignore) {}
+                    System.out.println("[업데이트][에러] diff 결과 없음. 기존 파일 유지");
                     throw new RuntimeException("diff 계산 결과가 없습니다. 기존 파일을 유지합니다.");
                 }
 
                 // diff 파일 s3저장, versionmetadata(diff)생성
                 for (DiffResult diff : diffs) {
-                    String diffKey = String.format("users/%d/sync-folders/%d/.diffs/v%d/%s.diff", userId, syncFolderId, newVersion, diff.getRelativePath());
+                    String diffKey = baseKey + String.format("/.diffs/v%d/%s.diff", newVersion, diff.getRelativePath());
+                    System.out.println("[업데이트] diffKey 저장: " + diffKey);
                     fileUtil.uploadToS3(diffKey, diff.toInputStream(), diff.getSize(), diff.getMimeType());
 
                     VersionMetadata versionMeta = VersionMetadata.builder()
@@ -178,25 +206,39 @@ public class FileService {
                     versionMetadataRepository.save(versionMeta);
                 }
                 // 루트파일 s3 교체
-                amazonS3.copyObject(bucketName, tmpKey, bucketName, s3RootKey);
+                String snapshotKey = baseKey + "/.snapshot/v" + newVersion + "." + extension;
+                amazonS3.copyObject(bucketName, tmpKey, bucketName, snapshotKey);
                 amazonS3.deleteObject(bucketName, tmpKey);
 
                 fileMeta.setCurrentVersion(newVersion);
-                fileMeta.setS3Key(s3RootKey);
+                fileMeta.setS3Key(snapshotKey);
                 fileMeta.setSize(file.getSize());
                 fileMeta.setMimeType(file.getContentType());
-                fileMeta.setHash(calculateFileHash(file.getInputStream()));
+                try {
+                    fileMeta.setHash(calculateFileHash(file.getInputStream()));
+                } catch (IOException e) {
+                    throw new RuntimeException("파일 해시 계산 중 오류", e);
+                }
                 fileMeta.setLastModified(LocalDateTime.now());
                 fileMeta.setLastSyncTime(LocalDateTime.now());
                 fileMetaRepository.save(fileMeta);
 
-                return s3RootKey;
+                System.out.println("[업데이트] 파일 메타데이터/버전메타데이터 갱신 완료");
+                return snapshotKey;
             } catch (IOException e) {
                 try { amazonS3.deleteObject(bucketName, tmpKey); } catch (Exception ignore) {}
+                System.out.println("[업데이트][에러] S3 업로드/처리 중 오류: " + e.getMessage());
                 throw new RuntimeException("S3 업로드/처리 중 오류 발생", e);
             }
         }
     }
+
+    // 파일 확장자 추출 함수 예시
+    private String getExtension(String fileName) {
+        int dotIdx = fileName.lastIndexOf('.');
+        return (dotIdx != -1) ? fileName.substring(dotIdx + 1) : "";
+    }
+
 
     /**
      * 파일의 SHA-256 해시값을 계산하는 메서드
