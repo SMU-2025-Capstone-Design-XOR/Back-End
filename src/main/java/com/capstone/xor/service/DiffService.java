@@ -32,6 +32,9 @@ public class DiffService {
     @Value("${cloud.aws.s3.bucket}")
     private String bucketName;
 
+    /**
+     * 파일 버전 복원: 파일 타입(OOXML/텍스트)에 따라 자동 분기
+     */
     public File restoreFileToVersion(Long fileMetaId, int targetVersion) {
         // 원하는 버전까지의 versionmetadata조회 1번이 .snapshot
         List<VersionMetadata> versions = versionMetadataRepository
@@ -42,16 +45,30 @@ public class DiffService {
         if (versions.isEmpty() || versions.get(0).getVersionType() != VersionType.SNAPSHOT) {
             throw new IllegalStateException("스냅샷(.snapshot) 파일이 존재하지 않습니다.");
         }
-        try {
-            // FileMeta에서 원본 파일명 얻기
-            FileMeta fileMeta = versions.get(0).getFileMeta();
-            String originalName = fileMeta.getOriginalName(); // ex) mydoc.docx
+        // FileMeta에서 원본 파일명 얻기
+        FileMeta fileMeta = versions.get(0).getFileMeta();
+        String originalName = fileMeta.getOriginalName(); // ex) mydoc.docx
 
-            // snapshot 다운로드 및 압축 해제
+        // OOXML/텍스트 파일 자동 분기
+        if (isOOXMLFile(originalName)) {
+            return restoreOoxmlFileFromSnapshotAndDiffs(versions, originalName);
+        } else if (isTextFile(originalName)) {
+            String restorePath = System.getProperty("java.io.tmpdir") + File.separator + originalName;
+            return restorePlainTextFileFromSnapshotAndDiffs(versions, restorePath);
+        } else if (isBinaryFile(originalName)) {
+            throw new UnsupportedOperationException("바이너리 파일 복원은 지원하지 않습니다.");
+        } else {
+            throw new IllegalArgumentException("지원하지 않는 파일 형식: " + originalName);
+        }
+    }
+    /**
+     * OOXML(압축 구조) 파일 복원
+     */
+    private File restoreOoxmlFileFromSnapshotAndDiffs(List<VersionMetadata> versions, String originalName) {
+        try {
             File snapshotFile = fileUtil.downloadFromS3(versions.get(0).getS3Key());
             File restoreDir = fileUtil.unzipToTempDir(snapshotFile);
 
-            // diff 순차 적용 v1 스냅샷에 v2의 diff부터 더함
             for (int i = 1; i < versions.size(); i++) {
                 VersionMetadata version = versions.get(i);
                 File diffFile = fileUtil.downloadFromS3(version.getS3Key());
@@ -63,60 +80,57 @@ public class DiffService {
                 }
             }
 
-            // 복원본 zip으로 압축
             File restoredZip = zipDirectoryToFile(restoreDir);
-
-            // 압축된 zip 파일을 원본 파일명(확장자 포함)으로 복사/이동
             File restoredFile = new File(restoredZip.getParent(), originalName);
             boolean renamed = restoredZip.renameTo(restoredFile);
             if (!renamed) {
-                // renamedTo 실패시 안전하게 복사
                 Files.copy(restoredZip.toPath(), restoredFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
                 restoredZip.delete();
             }
-
-            // 임시파일 정리
             fileUtil.deleteDirectoryRecursively(restoreDir);
-
-            return restoredZip;
+            return restoredFile;
         } catch (IOException e) {
             throw new UncheckedIOException("압축 해제 실패", e);
         }
     }
 
-    private void applyTextPatchToFile(File restoreDir, String relativePath, File diffFile) {
-        try {
-            File targetFile = new File(restoreDir, relativePath);
-            String oldText = targetFile.exists() ?
-                    Files.readString(targetFile.toPath(), StandardCharsets.UTF_8) : "";
-            String patchText = Files.readString(diffFile.toPath(), StandardCharsets.UTF_8);
+    /**
+     * 텍스트 파일 복원 (patch 순차 적용)
+     */
+    private File restorePlainTextFileFromSnapshotAndDiffs(List<VersionMetadata> versions, String restorePath) {
+        VersionMetadata snapshot = versions.get(0);
+        File snapshotFile = fileUtil.downloadFromS3(snapshot.getS3Key());
+        String restoredText = readFileToString(snapshotFile);
 
-            diff_match_patch dmp = new diff_match_patch();
-            List<diff_match_patch.Patch> patchList = dmp.patch_fromText(patchText);
-            LinkedList<diff_match_patch.Patch> patches = new LinkedList<>(patchList);
-            Object[] results = dmp.patch_apply(patches, oldText);
-            String restoredText = (String) results[0];
+        for (int i = 1; i < versions.size(); i++) {
+            VersionMetadata version = versions.get(i);
+            File diffFile = fileUtil.downloadFromS3(version.getS3Key());
+            String patchText = readFileToString(diffFile);
+            if (patchText == null || patchText.isEmpty()) continue;
+            try {
+                diff_match_patch dmp = new diff_match_patch();
 
-            // 복원된 텍스트를 덮어쓰기
-            targetFile.getParentFile().mkdirs();
-            Files.writeString(targetFile.toPath(), restoredText, StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
+                List<diff_match_patch.Patch> patchesList = dmp.patch_fromText(patchText);
+                LinkedList<diff_match_patch.Patch> patches = new LinkedList<>(patchesList);
+                Object[] results = dmp.patch_apply(patches, restoredText);
+                restoredText = (String) results[0];
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         }
-    }
 
-    private void applyBinaryPatchToFile(File restoreDir, String relativePath, File diffFile) {
+        File restoredFile = new File(restorePath);
         try {
-            File targetFile = new File(restoreDir, relativePath);
-            targetFile.getParentFile().mkdirs();
-            Files.copy(diffFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            Files.writeString(restoredFile.toPath(), restoredText);
         } catch (IOException e) {
-            throw new UncheckedIOException(e);
+            e.printStackTrace();
         }
+        return restoredFile;
     }
-
+    /**
+     * patch 파일의 S3 Key에서 상대경로 추출
+     */
     private String extractRelativePathFromDiffKey(String diffKey) {
-        // 예: users/1/sync-folders/2/.diffs/v2/word/document.xml.diff → word/document.xml
         int idx = diffKey.indexOf(".diffs/");
         String sub = diffKey.substring(idx + ".diffs/".length());
         int slashIdx = sub.indexOf("/");
@@ -124,6 +138,9 @@ public class DiffService {
         return rel.replaceAll("\\.diff$", "");
     }
 
+    /**
+     * 디렉터리를 zip 파일로 압축
+     */
     private File zipDirectoryToFile(File dir) {
         try {
             File zipFile = File.createTempFile("restore-", ".zip");
@@ -139,8 +156,7 @@ public class DiffService {
 
     private void zipDirRecursive(File rootDir, File currentDir, ZipOutputStream zos) throws IOException {
         for (File file : Objects.requireNonNull(currentDir.listFiles())) {
-            String entryName =
-                    rootDir.toPath().relativize(file.toPath()).toString();
+            String entryName = rootDir.toPath().relativize(file.toPath()).toString();
             if (file.isDirectory()) {
                 zipDirRecursive(rootDir, file, zos);
             } else {
@@ -150,6 +166,68 @@ public class DiffService {
             }
         }
     }
+
+    /**
+     * 텍스트 patch 적용 (디렉터리 내 파일)
+     */
+    private void applyTextPatchToFile(File restoreDir, String relativePath, File diffFile) {
+        try {
+            File targetFile = new File(restoreDir, relativePath);
+            String oldText = targetFile.exists() ?
+                    Files.readString(targetFile.toPath(), StandardCharsets.UTF_8) : "";
+            String patchText = Files.readString(diffFile.toPath(), StandardCharsets.UTF_8);
+
+            diff_match_patch dmp = new diff_match_patch();
+            LinkedList<diff_match_patch.Patch> patches = new LinkedList<>(dmp.patch_fromText(patchText));
+            Object[] results = dmp.patch_apply(patches, oldText);
+            String restoredText = (String) results[0];
+
+            targetFile.getParentFile().mkdirs();
+            Files.writeString(targetFile.toPath(), restoredText, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * 바이너리 patch 적용 (디렉터리 내 파일)
+     */
+    private void applyBinaryPatchToFile(File restoreDir, String relativePath, File diffFile) {
+        try {
+            File targetFile = new File(restoreDir, relativePath);
+            targetFile.getParentFile().mkdirs();
+            Files.copy(diffFile.toPath(), targetFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    // 파일 확장자 판별 함수들
+    private boolean isOOXMLFile(String filename) {
+        String lower = filename.toLowerCase();
+        return lower.endsWith(".docx") || lower.endsWith(".xlsx") || lower.endsWith(".pptx");
+    }
+
+    private boolean isTextFile(String filename) {
+        String lower = filename.toLowerCase();
+        return lower.endsWith(".xml") || lower.endsWith(".txt") || lower.endsWith(".json") || lower.endsWith(".csv");
+    }
+
+    private static final Set<String> BINARY_EXTENSIONS = Set.of(
+            "png", "jpg", "jpeg", "gif", "bmp", "tif", "bin", "pdf", "zip",
+            "docx", "doc", "xlsx", "xls", "pptx", "ppt", "hwp", "hwpx", "xlsb"
+    );
+
+    private boolean isBinaryFile(String filename) {
+        String lower = filename.toLowerCase();
+        int idx = lower.lastIndexOf('.');
+        if (idx != -1 && idx < lower.length() - 1) {
+            String ext = lower.substring(idx + 1);
+            return BINARY_EXTENSIONS.contains(ext);
+        }
+        return false;
+    }
+
 
     public List<DiffResult> diffAllFiles(File prevDir, File newDir) {
         List<DiffResult> results = new ArrayList<>();
@@ -222,10 +300,6 @@ public class DiffService {
             }
         }
     }
-    private boolean isTextFile(String filename) {
-        String lower = filename.toLowerCase();
-        return lower.endsWith(".xml") || lower.endsWith(".txt") || lower.endsWith(".json") || lower.endsWith(".csv");
-    }
 
     public String readFileToString(File file) {
         if (file == null) {
@@ -251,21 +325,6 @@ public class DiffService {
             e.printStackTrace();
             return null;
         }
-    }
-
-    private static final Set<String> BINARY_EXTENSIONS = Set.of(
-            "png", "jpg", "jpeg", "gif", "bmp", "tif", "bin", "pdf", "zip",
-            "docx", "doc", "xlsx", "xls", "pptx", "ppt", "hwp", "hwpx", "xlsb"
-    );
-
-    private boolean isBinaryFile(String filename) {
-        String lower = filename.toLowerCase();
-        int idx = lower.lastIndexOf('.');
-        if (idx != -1 && idx < lower.length() - 1) {
-            String ext = lower.substring(idx + 1);
-            return BINARY_EXTENSIONS.contains(ext);
-        }
-        return false;
     }
 
     private byte[] readFileToBytes(File file) {
