@@ -180,7 +180,13 @@ public class DiffService {
                 // 파일 비교
                 if (isTextFile(name)) {
                     String prevText = readFileToString(prevFile);
+                    if (prevText == null) {
+                        System.out.println("[DIFF] prevFile 읽기 실패 또는 파일 없음: " + (prevFile != null ? prevFile.getAbsolutePath() : "null"));
+                    }
                     String newText = readFileToString(newFile);
+                    if (newText == null) {
+                        System.out.println("[DIFF] newFile 읽기 실패 또는 파일 없음: " + (newFile != null ? newFile.getAbsolutePath() : "null"));
+                    }
 
                     // 둘 다 null이면(두 파일 모두 없음) 무시
                     if (prevText == null && newText == null) {
@@ -221,12 +227,29 @@ public class DiffService {
         return lower.endsWith(".xml") || lower.endsWith(".txt") || lower.endsWith(".json") || lower.endsWith(".csv");
     }
 
-    private String readFileToString(File file) {
-        if (file == null || !file.exists()) return null;
+    public String readFileToString(File file) {
+        if (file == null) {
+            System.out.println("[파일읽기] file == null");
+            return null;
+        }
+        if (!file.exists()) {
+            System.out.println("[파일읽기] 파일이 존재하지 않음: " + file.getAbsolutePath());
+            return null;
+        }
+        if (!file.canRead()) {
+            System.out.println("[파일읽기] 파일 읽기 권한 없음: " + file.getAbsolutePath());
+            return null;
+        }
         try {
-            return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            String content = Files.readString(file.toPath()); // Java 11 이상
+            if (content.isEmpty()) {
+                System.out.println("[파일읽기] 파일이 비어 있음: " + file.getAbsolutePath());
+            }
+            return content;
         } catch (IOException e) {
-            throw new UncheckedIOException(e);
+            System.out.println("[파일읽기] IOException 발생: " + file.getAbsolutePath());
+            e.printStackTrace();
+            return null;
         }
     }
 

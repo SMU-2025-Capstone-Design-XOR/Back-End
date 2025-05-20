@@ -54,10 +54,20 @@ public class FileUtil {
         }
     }
 
-    public File singleFileToTempDir(File file) throws IOException {
+    public File singleFileToTempDir(File file, String originalFileName) throws IOException {
         File tempDir = Files.createTempDirectory("singlefile-").toFile();
-        File dest = new File(tempDir, file.getName());
+        File dest = new File(tempDir, originalFileName);
         Files.copy(file.toPath(), dest.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+
+        System.out.println("임시 폴더: " + tempDir.getAbsolutePath());
+        File[] files = tempDir.listFiles();
+        if (files == null) {
+            System.out.println(" - (listFiles()가 null을 반환했습니다!)");
+        } else {
+            for (File f : files) {
+                System.out.println(" - " + f.getName());
+            }
+        }
         return tempDir;
     }
 
@@ -126,9 +136,29 @@ public class FileUtil {
             }
             throw new RuntimeException("압축 해제 실패: " + zipFile.getAbsolutePath(), e);
         }
+        // 압축 해제 후 폴더 구조 출력
+        if (tempDir != null && tempDir.exists()) {
+            System.out.println("압축 해제 임시 폴더: " + tempDir.getAbsolutePath());
+            printDirectoryTree(tempDir, " - ");
+        } else {
+            System.out.println("압축 해제 임시 폴더가 생성되지 않았습니다.");
+        }
         return tempDir;
     }
-
+    // 재귀적으로 폴더 구조 출력
+    private void printDirectoryTree(File dir, String prefix) {
+        File[] files = dir.listFiles();
+        if (files == null) {
+            System.out.println(prefix + "(listFiles()가 null을 반환했습니다!)");
+            return;
+        }
+        for (File f : files) {
+            System.out.println(prefix + f.getName());
+            if (f.isDirectory()) {
+                printDirectoryTree(f, prefix + "   ");
+            }
+        }
+    }
     public void deleteDirectoryRecursively(File dir) {
         if (dir.isDirectory()) {
             File[] files = dir.listFiles();

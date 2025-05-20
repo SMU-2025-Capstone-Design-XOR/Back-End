@@ -127,19 +127,25 @@ public class FileService {
                 File prevFile = fileUtil.downloadFromS3(fileMeta.getS3Key());
                 File newFile = fileUtil.downloadFromS3(tmpKey);
 
-                // 압축 해제 및 diff 계산
-                File prevUnzipDir;
-                if (fileUtil.isOOXMLFile(prevFile) && fileUtil.isZipFile(prevFile)) {
-                    prevUnzipDir = fileUtil.unzipToTempDir(prevFile);
-                } else {
-                    prevUnzipDir = fileUtil.singleFileToTempDir(prevFile);
-                }
+                boolean isPrevOOXML = fileUtil.isOOXMLFile(prevFile) && fileUtil.isZipFile(prevFile);
+                boolean isNewOOXML  = fileUtil.isOOXMLFile(newFile)  && fileUtil.isZipFile(newFile);
 
+                File prevUnzipDir;
                 File newUnzipDir;
-                if (fileUtil.isOOXMLFile(newFile) && fileUtil.isZipFile(newFile)) {
-                    newUnzipDir = fileUtil.unzipToTempDir(newFile);
+
+                // 압축 해제 및 diff 계산
+                if (isPrevOOXML && isNewOOXML) {
+                    // 둘 다 OOXML(압축 해제)
+                    prevUnzipDir = fileUtil.unzipToTempDir(prevFile);
+                    newUnzipDir  = fileUtil.unzipToTempDir(newFile);
+                } else if (!isPrevOOXML && !isNewOOXML) {
+                    // 둘 다 일반 파일(단일 파일 복사)
+                    prevUnzipDir = fileUtil.singleFileToTempDir(prevFile, fileName);
+                    newUnzipDir  = fileUtil.singleFileToTempDir(newFile, fileName);
                 } else {
-                    newUnzipDir = fileUtil.singleFileToTempDir(newFile);
+                    // 한쪽만 OOXML인 경우: 비교 불가, 예외 처리
+                    try { amazonS3.deleteObject(bucketName, tmpKey); } catch (Exception ignore) {}
+                    throw new RuntimeException("이전 버전과 새 버전의 파일 유형이 달라 비교할 수 없습니다.");
                 }
 
                 List<DiffResult> diffs;
