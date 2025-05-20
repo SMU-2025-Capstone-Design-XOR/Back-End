@@ -2,7 +2,6 @@ package com.capstone.xor.service;
 
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.model.AmazonS3Exception;
-import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.model.S3ObjectInputStream;
 import com.capstone.xor.dto.DiffResult;
@@ -44,7 +43,7 @@ public class FileService {
     private final UserRepository userRepository;
     private final VersionMetadataRepository versionMetadataRepository;
     private final FileUtil fileUtil;
-    private DiffService diffService;
+    private final DiffService diffService;
 
     @Value("${cloud.aws.s3.bucket}")
     private String bucketName;
@@ -129,9 +128,34 @@ public class FileService {
                 File newFile = fileUtil.downloadFromS3(tmpKey);
 
                 // 압축 해제 및 diff 계산
-                File prevUnzipDir = fileUtil.unzipToTempDir(prevFile);
-                File newUnzipDir = fileUtil.unzipToTempDir(newFile);
-                List<DiffResult> diffs = diffService.diffAllFiles(prevUnzipDir, newUnzipDir);
+                File prevUnzipDir;
+                if (fileUtil.isOOXMLFile(prevFile) && fileUtil.isZipFile(prevFile)) {
+                    prevUnzipDir = fileUtil.unzipToTempDir(prevFile);
+                } else {
+                    prevUnzipDir = fileUtil.singleFileToTempDir(prevFile);
+                }
+
+                File newUnzipDir;
+                if (fileUtil.isOOXMLFile(newFile) && fileUtil.isZipFile(newFile)) {
+                    newUnzipDir = fileUtil.unzipToTempDir(newFile);
+                } else {
+                    newUnzipDir = fileUtil.singleFileToTempDir(newFile);
+                }
+
+                List<DiffResult> diffs;
+                try {
+                    diffs = diffService.diffAllFiles(prevUnzipDir, newUnzipDir);
+                } catch (Exception e) {
+                    // diff 계산 중 예외 발생 시 tmp 파일 삭제 후 예외 반환
+                    try { amazonS3.deleteObject(bucketName, tmpKey); } catch (Exception ignore) {}
+                    throw new RuntimeException("diff 계산 중 오류 발생: " + e.getMessage(), e);
+                }
+
+                if (diffs == null || diffs.isEmpty()) {
+                    // diff가 없으면 tmp 파일 삭제 후 예외 반환(기존 파일 유지)
+                    try { amazonS3.deleteObject(bucketName, tmpKey); } catch (Exception ignore) {}
+                    throw new RuntimeException("diff 계산 결과가 없습니다. 기존 파일을 유지합니다.");
+                }
 
                 // diff 파일 s3저장, versionmetadata(diff)생성
                 for (DiffResult diff : diffs) {

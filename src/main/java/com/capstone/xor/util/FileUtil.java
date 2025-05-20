@@ -37,6 +37,32 @@ public class FileUtil {
         amazonS3.putObject(bucketName, s3Key, is, metadata);
     }
 
+    public boolean isOOXMLFile(File file) {
+        String name = file.getName().toLowerCase();
+        return name.endsWith(".docx") || name.endsWith(".xlsx") || name.endsWith(".pptx");
+    }
+
+    public boolean isZipFile(File file) {
+        try (FileInputStream fis = new FileInputStream(file)) {
+            byte[] signature = new byte[4];
+            if (fis.read(signature) != 4) return false;
+            // ZIP 파일 시그니처: 50 4B 03 04
+            return signature[0] == 0x50 && signature[1] == 0x4B &&
+                    signature[2] == 0x03 && signature[3] == 0x04;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    public File singleFileToTempDir(File file) throws IOException {
+        File tempDir = Files.createTempDirectory("singlefile-").toFile();
+        File dest = new File(tempDir, file.getName());
+        Files.copy(file.toPath(), dest.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        return tempDir;
+    }
+
+
+
     public File downloadFromS3(String s3Key) {
         try {
             S3Object s3Object = amazonS3.getObject(bucketName, s3Key);
