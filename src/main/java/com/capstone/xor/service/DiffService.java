@@ -182,12 +182,18 @@ public class DiffService {
                     String prevText = readFileToString(prevFile);
                     String newText = readFileToString(newFile);
 
+                    // 둘 다 null이면(두 파일 모두 없음) 무시
+                    if (prevText == null && newText == null) {
+                        continue;
+                    }
                     if (!Objects.equals(prevText, newText)) {
                         diff_match_patch dmp = new diff_match_patch();
-                        LinkedList<diff_match_patch.Diff> diffs = dmp.diff_main(
-                                prevText == null ? "" : prevText,
-                                newText == null ? "" : newText
-                        );
+                        // patch_make에 null이 들어가지 않도록 ""(빈 문자열)로 대체
+                        String safePrevText = prevText == null ? "" : prevText;
+                        String safeNewText = newText == null ? "" : newText;
+
+                        LinkedList<diff_match_patch.Diff> diffs = dmp.diff_main(safePrevText, safeNewText);
+
                         dmp.diff_cleanupSemantic(diffs);
                         LinkedList<diff_match_patch.Patch> patches = dmp.patch_make(prevText, newText);
                         String patchText = dmp.patch_toText(patches);
