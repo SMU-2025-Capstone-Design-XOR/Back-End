@@ -2,6 +2,9 @@ package com.capstone.xor.entity;
 
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.OnDelete;
+import org.hibernate.annotations.OnDeleteAction;
+
 import java.time.LocalDateTime;
 
 @Entity
@@ -19,6 +22,7 @@ public class VersionMetadata {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "file_id", nullable = false)
+    @OnDelete(action = OnDeleteAction.CASCADE)
     private FileMeta fileMeta;
 
     @Column(nullable = false)
