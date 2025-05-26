@@ -60,7 +60,7 @@ public class FileController {
     public ResponseEntity<Resource> downloadFile(
             @PathVariable("userId") Long userId,
             @PathVariable("folderId") Long folderId,
-            @PathVariable("path") String relativePath,
+            @RequestParam("path") String relativePath,
             Authentication authentication) {
 
         System.out.println("Raw relativePath: " + relativePath);

@@ -465,7 +465,7 @@ public class FileService {
             amazonS3.deleteObject(bucketName, fileMeta.getS3Key());
             // S3에서 삭제 성공시 DB에서도 삭제
             fileMetaRepository.delete(fileMeta);
-            System.out.println(String.format("[%s] 파일 삭제 완료", fileMeta.getOriginalName()));
+            System.out.printf("[%s] 파일 삭제 완료", fileMeta.getOriginalName());
         } catch (AmazonS3Exception e) {
             // S3 삭제 실패 시 DB에서 삭제하지 않음
             System.err.println("S3 파일 삭제 실패: " + e.getMessage());

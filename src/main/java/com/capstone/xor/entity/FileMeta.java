@@ -23,7 +23,7 @@ public class FileMeta {
     private String originalName;
 
     // S3 저장 키(경로)
-    @Column(nullable = true, length = 512)
+    @Column(length = 512)
     private String s3Key;
 
     // 파일 크기
@@ -58,9 +58,4 @@ public class FileMeta {
 
     // 마지막 동기화 시간
     private LocalDateTime lastSyncTime = LocalDateTime.now();
-
-    // 버전 증가 메서드
-    public void incrementVersion() {
-        this.currentVersion += 1;
-    }
 }
