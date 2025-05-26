@@ -172,4 +172,14 @@ public class FileUtil {
             System.err.println("임시 파일/디렉터리 삭제 실패: " + dir.getAbsolutePath());
         }
     }
+
+    // S3 내 파일 복사
+    public void copyInS3(String srcKey, String destKey) {
+        amazonS3.copyObject(bucketName, srcKey, bucketName, destKey);
+    }
+
+    // S3 파일 삭제
+    public void deleteFromS3(String key) {
+        amazonS3.deleteObject(bucketName, key);
+    }
 }

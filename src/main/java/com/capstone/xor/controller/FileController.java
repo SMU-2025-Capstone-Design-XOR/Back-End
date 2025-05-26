@@ -56,11 +56,11 @@ public class FileController {
     }
 
     // 파일 다운로드 엔드포인트
-    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/{relativePath:.+}")
+    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/download")
     public ResponseEntity<Resource> downloadFile(
             @PathVariable("userId") Long userId,
             @PathVariable("folderId") Long folderId,
-            @PathVariable("relativePath") String relativePath,
+            @PathVariable("path") String relativePath,
             Authentication authentication) {
 
         System.out.println("Raw relativePath: " + relativePath);
@@ -129,15 +129,15 @@ public class FileController {
      *
      * @param userId         사용자 ID
      * @param folderId       폴더 ID
-     * @param relativePath   파일 이름
+     * @param relativePath   파일의 상대경로 + 파일명 (폴더/서브폴더/파일명)
      * @param authentication 인증 정보
      * @return 파일 메타데이터
      */
-    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/{relativePath}/meta")
+    @GetMapping("/users/{userId}/sync-folders/{folderId}/files/meta")
     public ResponseEntity<FileMetaDTO> getFileMeta(
             @PathVariable Long userId,
             @PathVariable Long folderId,
-            @PathVariable String relativePath,
+            @RequestParam("path") String relativePath,
             Authentication authentication) {
 
         // URL 디코딩

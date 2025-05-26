@@ -23,7 +23,7 @@ public class FileMeta {
     private String originalName;
 
     // S3 저장 키(경로)
-    @Column(nullable = false, length = 512)
+    @Column(nullable = true, length = 512)
     private String s3Key;
 
     // 파일 크기
