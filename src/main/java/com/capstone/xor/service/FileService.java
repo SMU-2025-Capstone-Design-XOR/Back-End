@@ -75,7 +75,9 @@ public class FileService {
         System.out.println("[업로드] 파일명: " + fileName + ", 확장자: " + extension);
 
         // 파일별 S3 baseKey (파일명 기준 디렉터리)
-        String baseKey = String.format("users/%d/sync-folders/%d/%s/%s", userId, syncFolderId, relativePath, fileName);
+        String baseKey = (relativePath == null || relativePath.isEmpty())
+                ? String.format("users/%d/sync-folders/%d/%s", userId, syncFolderId, fileName)
+                : String.format("users/%d/sync-folders/%d/%s/%s", userId, syncFolderId, relativePath, fileName);
 
         // 최신 파일 S3 key (항상 최신본, 사용자 확인용)
         String latestKey = baseKey + "/latest/" + fileName;
@@ -429,6 +431,7 @@ public class FileService {
      */
     @Transactional
     public void deleteFile(Long userId, Long folderId, Long fileId) {
+        System.out.println("[deleteFile] userId: " + userId + ", folderId: " + folderId + ", fileId: " + fileId);
         // 파일 메타 데이터 조회
         FileMeta fileMeta = fileMetaRepository.findById(fileId)
                 .orElseThrow(() -> new ResourceNotFoundException("파일을 찾을 수 없습니다: " + fileId));
