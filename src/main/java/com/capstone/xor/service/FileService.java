@@ -1,9 +1,7 @@
 package com.capstone.xor.service;
 
 import com.amazonaws.services.s3.AmazonS3;
-import com.amazonaws.services.s3.model.AmazonS3Exception;
-import com.amazonaws.services.s3.model.S3Object;
-import com.amazonaws.services.s3.model.S3ObjectInputStream;
+import com.amazonaws.services.s3.model.*;
 import com.capstone.xor.dto.DiffResult;
 import com.capstone.xor.dto.FileMetaDTO;
 import com.capstone.xor.dto.SyncRequest;
@@ -16,6 +14,7 @@ import com.capstone.xor.repository.UserRepository;
 import com.capstone.xor.repository.VersionMetadataRepository;
 import com.capstone.xor.util.FileUtil;
 import lombok.RequiredArgsConstructor;
+import org.joda.time.IllegalInstantException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
@@ -412,8 +411,15 @@ public class FileService {
             FileMeta file = fileMetaRepository.findById(fileId)
                     .orElseThrow(() -> new ResourceNotFoundException("파일을 찾을 수 없습니다: " + fileId));
 
-            // S3에서 파일 삭제
-            amazonS3.deleteObject(bucketName, file.getS3Key());
+            String s3Key = file.getS3Key();
+            int latestIdx = s3Key.indexOf("/latest/");
+            if (latestIdx == -1) {
+                System.err.println("S3 키 형식이 잘못되었습니다: " + s3Key);
+                continue;
+            }
+            String basePrefix = s3Key.substring(0, latestIdx);
+
+            deleteAllS3ObjectsWithPrefix(basePrefix + "/");
 
             // DB에서 메타데이터 삭제
             fileMetaRepository.delete(file);
@@ -445,35 +451,20 @@ public class FileService {
             throw new AccessDeniedException("잘못된 폴더 접근입니다.");
         }
 
-        // S3에 파일이 존재하는지 확인
-        boolean objectExists = true;
-        try {
-            amazonS3.getObjectMetadata(bucketName, fileMeta.getS3Key());
-        } catch (AmazonS3Exception e) {
-            if (e.getStatusCode() == 404) {
-                // 파일이 S3에 없는경우
-                objectExists = false;
-                System.out.println("파일이 S3에 존재하지 않습니다. DB에서만 삭제합니다: " + fileMeta.getOriginalName());
-            }
+        // S3 파일 prefix구하기
+        String s3Key = fileMeta.getS3Key();
+        int latestIdx = s3Key.indexOf("/latest");
+        if (latestIdx == -1) {
+            throw new IllegalStateException("S3 키 형식이 잘못되었습니다: " + s3Key);
         }
+        String basePrefix = s3Key.substring(0, latestIdx);
 
-        // S3에 파일이 없으면 DB에서만 삭제
-        if (!objectExists) {
-           fileMetaRepository.delete(fileMeta);
-            return;
-        }
+        // S3에서 prefix로 시작하는 모든 객체 삭제
+        deleteAllS3ObjectsWithPrefix(basePrefix + "/");
 
-        // S3에 파일이 있으면 삭제 시도
-        try {
-            amazonS3.deleteObject(bucketName, fileMeta.getS3Key());
-            // S3에서 삭제 성공시 DB에서도 삭제
-            fileMetaRepository.delete(fileMeta);
-            System.out.printf("[%s] 파일 삭제 완료", fileMeta.getOriginalName());
-        } catch (AmazonS3Exception e) {
-            // S3 삭제 실패 시 DB에서 삭제하지 않음
-            System.err.println("S3 파일 삭제 실패: " + e.getMessage());
-            throw new RuntimeException("파일 삭제 중 오류가 발생하였습니다: " + e.getMessage());
-        }
+        // DB에서 파일 메타데이터 삭제
+        fileMetaRepository.delete(fileMeta);
+        System.out.printf("[%s] 파일 및 관련 버전 전체 삭제 완료%n", fileMeta.getOriginalName());
     }
 
     /**
@@ -580,6 +571,21 @@ public class FileService {
         return files.stream()
                 .map(this::convertToDTO)
                 .collect(Collectors.toList());
+    }
+
+    public void deleteAllS3ObjectsWithPrefix(String prefix) {
+        ListObjectsV2Request req = new ListObjectsV2Request()
+                .withBucketName(bucketName)
+                .withPrefix(prefix);
+        ListObjectsV2Result result;
+        do {
+            result = amazonS3.listObjectsV2(req);
+            for (S3ObjectSummary obj : result.getObjectSummaries()) {
+                amazonS3.deleteObject(bucketName, obj.getKey());
+                System.out.printf("[S3] 삭제: %s%n", obj.getKey());
+            }
+            req.setContinuationToken(result.getNextContinuationToken());
+        } while (result.isTruncated());
     }
 
 }

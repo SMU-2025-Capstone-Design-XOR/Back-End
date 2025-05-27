@@ -24,6 +24,7 @@ public class SyncFolderService {
     private final UserRepository userRepository;
     private final FileMetaRepository fileMetaRepository;
     private final AmazonS3 amazonS3;
+    private final FileService fileService;
 
     @Value("${cloud.aws.s3.bucket}")
     private String bucketName;
@@ -71,14 +72,14 @@ public class SyncFolderService {
 
         // S3에서 파일 삭제
         for (FileMeta file : files) {
-            try {
-                // s3에서 파일 삭제
-                amazonS3.deleteObject(bucketName, file.getS3Key());
-                System.out.println("S3 파일 삭제 완료: " + file.getS3Key());
-            } catch (AmazonS3Exception e) {
-                // 파일 삭제 실패 시 로그만 남기고 계속 진행
-                System.err.println("S3 파일 삭제 실패: " + file.getS3Key() + ", 오류: " + e.getMessage() );
+            String s3Key = file.getS3Key();
+            int latestIdx = s3Key.indexOf("/latest/");
+            if (latestIdx == -1) {
+                System.err.println("S3 키 형식이 잘못되었습니다: " + s3Key);
+                continue;
             }
+            String basePrefix = s3Key.substring(0, latestIdx);
+            fileService.deleteAllS3ObjectsWithPrefix(basePrefix + "/");
         }
 
         // db에서 메타데이터 삭제
